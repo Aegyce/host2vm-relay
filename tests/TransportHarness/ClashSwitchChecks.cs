@@ -78,7 +78,7 @@ internal static class ClashSwitchChecks
         start.ArgumentList.Add("-d"); start.ArgumentList.Add(root);
         using var core = Process.Start(start)!;
         using var api = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/"), Timeout = TimeSpan.FromSeconds(1) };
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         Task? pump = null;
         try
         {
@@ -102,9 +102,9 @@ internal static class ClashSwitchChecks
                     await Task.Delay(ClashHealthSync.Interval, stop.Token);
                 }
             });
-            async Task WaitFor(string expected, Stopwatch watch)
+            async Task WaitFor(string expected, Stopwatch watch, double budgetMs = 1000)
             {
-                while (watch.ElapsedMilliseconds < 1000)
+                while (watch.ElapsedMilliseconds < budgetMs)
                 {
                     using var state = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay-TCP", stop.Token));
                     using var udpState = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay-UDP", stop.Token));
@@ -114,7 +114,7 @@ internal static class ClashSwitchChecks
                     }
                     await Task.Delay(10, stop.Token);
                 }
-                throw new IOException("Switch exceeded 1 second: " + expected);
+                throw new IOException($"Switch exceeded {budgetMs} ms: " + expected);
             }
             await WaitFor("PASS", Stopwatch.StartNew());
             for (int i = 0; i < 10; i++)
@@ -128,8 +128,8 @@ internal static class ClashSwitchChecks
             Volatile.Write(ref active, 1);
             await WaitFor("Host2VMRelay", Stopwatch.StartNew());
             Volatile.Write(ref active, -1);
-            await WaitFor("PASS", Stopwatch.StartNew());
-            Console.WriteLine("PASS loss of lease renewal falls back within one second");
+            await WaitFor("PASS", Stopwatch.StartNew(), RelayHealthTiming.Lease.TotalMilliseconds + 1000);
+            Console.WriteLine("PASS loss of lease renewal falls back after the health grace period");
         }
         finally
         {

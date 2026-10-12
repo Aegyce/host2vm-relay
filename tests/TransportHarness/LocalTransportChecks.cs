@@ -26,6 +26,7 @@ internal static class LocalTransportChecks
             await LoadChecks.RunAsync(Check, token, RelaySocksServer.DefaultTransfers);
             await LoadChecks.RunAsync(Check, token);
             await HealthChecks.RunAsync();
+            await SlowHealthChecks.RunAsync(Check, token);
             Check(true, "health endpoint supports repeated probes and state changes on one connection");
             await TcpRelayChecks.RunAsync(Check, token);
             await SessionChecks.RunAsync(Check, token);

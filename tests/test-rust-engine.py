@@ -204,6 +204,22 @@ async def scenario(port, user, key, encrypted, password):
             writer.close(); await writer.wait_closed()
 
 
+async def slow_probes(port, user, key):
+    core = await Core().start(port, user, key)
+    try:
+        await core.request('probe')
+        check(True, 'SSH probe accepts a four-second remote scheduling delay')
+        key.parent.joinpath('probe-delay').write_text('7')
+        started = time.monotonic()
+        await core.write(dict(id=2, op='probe'))
+        result = await core.read()
+        elapsed = time.monotonic() - started
+        check(not result.get('ok') and '5 seconds' in result.get('error', '') and 4.5 <= elapsed < 6.5,
+              'stalled SSH probe expires after five seconds with a diagnostic reason', elapsed=elapsed)
+    finally:
+        await core.close()
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     Path('/run/sshd').mkdir(exist_ok=True)
@@ -232,9 +248,27 @@ def main():
         if sshd.poll() is not None:
             raise AssertionError('isolated sshd failed to start')
         asyncio.run(scenario(port, user, key, encrypted, password))
+        # Delay only this isolated fixture's exec channel. No live VM is stopped
+        # or loaded to reproduce scheduling delays.
+        delay = temporary / 'probe-delay'; delay.write_text('4'); delay.chmod(0o644)
+        wrapper = temporary / 'slow-probe'
+        wrapper.write_text(f'#!/bin/sh\nsleep "$(cat {delay})"\nprintf h2vm-alive\n')
+        wrapper.chmod(0o755)
+        auth.write_text(f'command="{wrapper}" ' + key.with_suffix('.pub').read_text())
+        asyncio.run(slow_probes(port, user, key))
     finally:
         if sshd: sshd.terminate(); sshd.wait(timeout=5)
-        if created: run('userdel', user)
+        if created:
+            # Closing an exec channel does not guarantee the remote command has
+            # exited. Stop only this fixture's temporary user's delayed probes.
+            subprocess.run(['pkill', '-KILL', '-u', user], check=False)
+            for attempt in range(20):
+                deleted = subprocess.run(['userdel', user], capture_output=True)
+                if deleted.returncode == 0:
+                    break
+                if deleted.returncode != 8 or attempt == 19:
+                    deleted.check_returncode()
+                time.sleep(.1)
         shutil.rmtree(temporary)
         (OUT / 'ssh-acceptance.json').write_text(json.dumps(REPORT, indent=2))
 

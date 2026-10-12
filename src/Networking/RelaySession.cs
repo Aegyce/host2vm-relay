@@ -136,10 +136,17 @@ internal sealed class RelaySession : IDisposable
             bool alive;
             try
             {
-                await core.RequestAsync("probe", RelayHealthTiming.ProbeTimeout, lifetime.Token).ConfigureAwait(false);
+                await core.RequestAsync("probe", RelayHealthTiming.ControlProbeTimeout, lifetime.Token).ConfigureAwait(false);
                 alive = true;
             }
-            catch { alive = false; }
+            catch (Exception ex)
+            {
+                alive = false;
+                if (!lifetime.IsCancellationRequested)
+                    log("WARNING SSH 健康检查失败：" + (ex is OperationCanceledException
+                        ? $"等待转发内核响应超过 {RelayHealthTiming.ControlProbeTimeout.TotalSeconds:0} 秒。"
+                        : ex.Message));
+            }
             if (!alive || lifetime.IsCancellationRequested) { Dispose(); return false; }
             lock (gate) Publish();
             if (tested is not null && !await udpProbe!.ConfigureAwait(false))

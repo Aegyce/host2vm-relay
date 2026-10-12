@@ -163,7 +163,9 @@ impl Drop for CommandChannel {
     }
 }
 pub async fn probe(ssh: &Ssh) -> Result<()> {
-    let reply = timeout(Duration::from_secs(3), command(ssh, "printf h2vm-alive")).await??;
+    let reply = timeout(Duration::from_secs(5), command(ssh, "printf h2vm-alive"))
+        .await
+        .context("SSH health probe exceeded 5 seconds")??;
     ensure!(reply == "h2vm-alive", "SSH probe mismatch");
     Ok(())
 }
