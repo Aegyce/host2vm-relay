@@ -39,6 +39,16 @@ internal static class ReleaseUpdateChecks
         var updater = new ReleaseUpdater(http);
         try
         {
+            handler.Reply = request =>
+            {
+                check(request.RequestUri!.AbsoluteUri == "https://api.github.com/repos/" + ReleaseUpdater.Repository + "/releases/latest",
+                    "API update check targets the canonical repository and latest release");
+                return new(HttpStatusCode.OK) { Content = new StringContent(Metadata()) };
+            };
+            var apiRelease = await updater.CheckAsync(Architecture.X64, default);
+            check(apiRelease.DownloadUrl.AbsoluteUri.StartsWith(ReleaseUpdater.RepositoryUrl + "/releases/download/", StringComparison.Ordinal)
+                && apiRelease.PageUrl.StartsWith(ReleaseUpdater.RepositoryUrl + "/releases/tag/", StringComparison.Ordinal),
+                "API installer and release page use the canonical repository");
             foreach (var status in new[] { HttpStatusCode.Forbidden, HttpStatusCode.TooManyRequests, HttpStatusCode.ServiceUnavailable })
             foreach (var arch in new[] { Architecture.X86, Architecture.X64, Architecture.Arm64 })
             {

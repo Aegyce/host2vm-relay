@@ -42,6 +42,17 @@ def classify(paths, version_changed=False, full=False):
             plan["packaging"] = True
         elif path.startswith("native/"):
             plan["native_checks"] = plan["network"] = True
+        elif path.startswith("tests/TransportHarness/") or path in {
+            "tests/test-transparent-network.py", "tests/network-services.py",
+            "tests/generate-network-config.cjs", "tests/test-script.cjs", "tests/test-incremental.cjs",
+        }:
+            plan["network"] = True
+        elif path in {"tests/test-rust-engine.py", "tests/test-native-agent.py"}:
+            plan["native_checks"] = plan["network"] = True
+        elif path.startswith("src/Updates/") or path == "src/Diagnostics/ReleaseUpdateChecks.cs":
+            # Pure updater behavior is covered by the always-run self-test and
+            # packaged executable checks; it does not change layout or tunnels.
+            pass
         elif path.startswith("src/") and path.endswith(".cs"):
             if not path.startswith(("src/Networking/", "src/Integration/")):
                 plan["ui"] = True

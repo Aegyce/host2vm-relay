@@ -14,9 +14,24 @@ class ChangeSelectionTests(unittest.TestCase):
         self.assertEqual(result, dict(build=True, packaging=True, ui=False, network=False, native_checks=False))
 
     def test_shared_or_unknown_inputs_run_full_checks(self):
-        for path in [".github/workflows/build.yml", "scripts/ci-plan.py", "Directory.Build.props", "tests/test-script.cjs", "new-build-input.json"]:
+        for path in [".github/workflows/build.yml", "scripts/ci-plan.py", "Directory.Build.props", "new-build-input.json"]:
             with self.subTest(path=path):
                 self.assertTrue(all(plan.classify([path]).values()))
+
+    def test_network_regressions_do_not_trigger_unrelated_dpi_checks(self):
+        for path in ["tests/TransportHarness/SlowHealthChecks.cs", "tests/test-transparent-network.py",
+                     "tests/test-script.cjs", "tests/test-rust-engine.py", "tests/test-native-agent.py"]:
+            with self.subTest(path=path):
+                result = plan.classify([path])
+                self.assertTrue(result["build"] and result["network"])
+                self.assertFalse(result["ui"])
+        self.assertTrue(plan.classify(["tests/test-rust-engine.py"])["native_checks"])
+
+    def test_updater_changes_keep_application_checks_without_tunnel_or_dpi(self):
+        for path in ["src/Updates/ReleaseUpdater.cs", "src/Diagnostics/ReleaseUpdateChecks.cs"]:
+            with self.subTest(path=path):
+                result = plan.classify([path], version_changed=True)
+                self.assertEqual(result, dict(build=True, packaging=True, ui=False, network=False, native_checks=False))
 
     def test_transport_and_native_edits_keep_network_coverage(self):
         for path in ["native/relay-core/src/main.rs", "src/Networking/RelaySession.cs", "src/Configuration/Settings.cs", "src/Program.cs"]:

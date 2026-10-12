@@ -15,8 +15,9 @@ internal sealed record ReleaseUpdate(Version Version, string Tag, string AssetNa
 /// <summary>Reads only this repository's stable releases; downloads are bounded and verified before handoff.</summary>
 internal sealed class ReleaseUpdater(HttpClient http)
 {
-    public const string RepositoryUrl = "https://github.com/Noemion/host2vm-relay";
-    private const string LatestUrl = "https://api.github.com/repos/Noemion/host2vm-relay/releases/latest";
+    public const string Repository = "Aegyce/host2vm-relay";
+    public const string RepositoryUrl = "https://github.com/" + Repository;
+    private const string LatestUrl = "https://api.github.com/repos/" + Repository + "/releases/latest";
     private const long MaximumInstallerSize = 256L * 1024 * 1024;
     public static Version CurrentVersion => typeof(ReleaseUpdater).Assembly.GetName().Version!;
 
