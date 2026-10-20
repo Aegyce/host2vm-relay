@@ -15,8 +15,29 @@ public sealed partial class MainForm
             settings = Settings.Deserialize(settings.Serialize());
             settings.Schedule = new ConnectionSchedule { Enabled = true };
             // These paths intentionally have no session, credentials or network I/O.
-            Connect().GetAwaiter().GetResult();
-            check(!wanted && !busy && session is null && feed.Text.Contains("关闭定时"), "manual connect is blocked outside the schedule");
+            check(!PrepareScheduledConnection(automatic: true), "automatic connect remains blocked outside the schedule");
+            check(PrepareScheduledConnection(automatic: false) && !ScheduleBlocksConnection,
+                "manual connect is allowed outside the schedule including connection completion");
+            wanted = true; busy = true;
+            using (var manualPending = new CancellationTokenSource())
+            {
+                connectionAttempt = manualPending;
+                check(!ApplyScheduleAsync().GetAwaiter().GetResult() && wanted && !manualPending.IsCancellationRequested,
+                    "schedule polling preserves an outside-window manual connection attempt");
+                check(PrepareScheduledConnection(automatic: true), "outside-window manual connection permits automatic recovery");
+                now = new(2026, 10, 8, 12, 0, 0);
+                ApplyScheduleAsync().GetAwaiter().GetResult();
+                check(!manualScheduleOverride && wanted, "next active window resumes scheduled management without disconnecting");
+                now = new(2026, 10, 8, 18, 0, 0);
+                ApplyScheduleAsync().GetAwaiter().GetResult();
+                check(manualPending.IsCancellationRequested && !wanted, "next window end cancels a pending connection after manual override");
+                connectionAttempt = null;
+            }
+            busy = false;
+            PrepareScheduledConnection(automatic: false);
+            Stop().GetAwaiter().GetResult();
+            check(!manualScheduleOverride && !PrepareScheduledConnection(automatic: true),
+                "manual disconnect clears outside-window override and prevents automatic reconnect");
             wanted = true; busy = true;
             using (var pending = new CancellationTokenSource())
             {
@@ -40,6 +61,20 @@ public sealed partial class MainForm
             now = new(2027, 1, 4, 12, 0, 0);
             PollNetworkAsync().GetAwaiter().GetResult();
             check(!wanted && scheduleStatus.Text.Contains("2027"), "missing calendar pauses automatic reconnect and exposes the year in the UI");
+            check(PrepareScheduledConnection(automatic: false) && !ScheduleBlocksConnection
+                && !ApplyScheduleAsync().GetAwaiter().GetResult(), "missing calendar still allows a manual connection");
+            Stop().GetAwaiter().GetResult();
+            settings.Schedule.Start = new(22, 0); settings.Schedule.End = new(2, 0);
+            now = new(2026, 9, 30, 21, 0, 0);
+            PrepareScheduledConnection(automatic: false);
+            wanted = busy = true;
+            now = new(2026, 10, 1, 1, 0, 0);
+            ApplyScheduleAsync().GetAwaiter().GetResult();
+            check(!manualScheduleOverride && wanted, "overnight window resumes management using its start date");
+            now = new(2026, 10, 1, 2, 0, 0);
+            ApplyScheduleAsync().GetAwaiter().GetResult();
+            check(!wanted && ScheduleBlocksConnection, "overnight window end restores the automatic connection restriction");
+            busy = false;
             var start = pages.Pages[4].Controls.Find("scheduleStart", true).OfType<DateTimePicker>().Single();
             var end = pages.Pages[4].Controls.Find("scheduleEnd", true).OfType<DateTimePicker>().Single();
             check(start.CustomFormat == "HH:mm" && end.CustomFormat == "HH:mm" && start.ShowUpDown && end.ShowUpDown,
@@ -48,7 +83,7 @@ public sealed partial class MainForm
         finally
         {
             settings = saved; scheduleClock = savedClock;
-            busy = wanted = false; connectionAttempt = null;
+            busy = wanted = manualScheduleOverride = false; connectionAttempt = null;
             scheduleActivation.Reset(); lastScheduleNotice = null;
             state.Text = originalCaption; feed.Text = originalFeed;
             UpdateScheduleStatus(settings.Schedule.Evaluate(scheduleClock()));

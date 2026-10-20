@@ -30,15 +30,9 @@ public sealed partial class MainForm
     private async Task Connect(bool automatic = false)
     {
         if (busy || polling) return;
-        var window = EvaluateSchedule();
-        if (settings.Schedule.Enabled && !window.Active)
-        {
-            feed.Text = window.Description + "；如需立即连接，请先在设置中关闭定时连接。";
-            return;
-        }
-        if (!automatic) scheduleActivation.Suppress(window);
+        if (!PrepareScheduledConnection(automatic)) return;
         try { SaveConnection(); }
-        catch (Exception ex) { wanted = false; connectionFailureReason = ex.Message; PresentPath(ex.Message); Error(ex); return; }
+        catch (Exception ex) { wanted = manualScheduleOverride = false; UpdateScheduleStatus(EvaluateSchedule()); connectionFailureReason = ex.Message; PresentPath(ex.Message); Error(ex); return; }
         connectionFailureReason = null;
         busy = true;
         wanted = true;
@@ -85,7 +79,7 @@ public sealed partial class MainForm
                 // Cancellation must release the SSH callback even when the UI is closing.
                 return decision.Task.WaitAsync(attempt.Token).GetAwaiter().GetResult();
             }, Log, attempt.Token, message => { if (Volatile.Read(ref settings).LogForwardingRequests) Log(message); });
-            if (!wanted || IsDisposed || attempt.IsCancellationRequested || (settings.Schedule.Enabled && !EvaluateSchedule().Active))
+            if (!wanted || IsDisposed || attempt.IsCancellationRequested || ScheduleBlocksConnection)
             {
                 wanted = false;
                 await connectionCleanup.Enqueue(connected, connected.DisposalCompleted);
@@ -244,6 +238,8 @@ public sealed partial class MainForm
     {
         if (manual) scheduleActivation.Suppress(EvaluateSchedule());
         if (busy) return;
+        manualScheduleOverride = false;
+        UpdateScheduleStatus(EvaluateSchedule());
         wanted = false; busy = true; SetConnectionControls(false);
         state.Text = "● 正在断开…"; feed.Text = "正在后台释放连接，请稍候。";
         SetConnectionIcon(ConnectionIconState.Connecting, "正在断开虚拟机");

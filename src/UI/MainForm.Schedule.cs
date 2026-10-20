@@ -7,6 +7,7 @@ public sealed partial class MainForm
     private readonly Label scheduleOverview = UiLayout.Help("");
     private CancellationTokenSource? connectionAttempt;
     private string? lastScheduleNotice;
+    private bool manualScheduleOverride;
     private Func<DateTime> scheduleClock = () => DateTime.Now;
 
     private Control BuildScheduleSettings()
@@ -43,15 +44,29 @@ public sealed partial class MainForm
             enabled, UiLayout.Pair(UiLayout.Field("开始时间", start), UiLayout.Field("结束时间", end)), workdays, restDays,
             UiLayout.Help("两项都选表示每天。休息日包括周末和法定假日，排除调休上班日。结束时间早于开始时间表示跨午夜，日期类型按开始当天判断。"),
             UiLayout.Help("内置 2026 年中国节假日安排，可在下方更新日历。缺少对应年份时暂停并提示更新；“每天”不受影响。"),
-            UiLayout.Help("请先完成一次手动连接以保存服务器指纹；重启后自动连接需要已保存的凭据或可用私钥。手动断开后，本次时段不再自动连接，下个时段恢复。关闭定时后当前连接保持原状。"),
+            UiLayout.Help("请先完成一次手动连接以保存服务器指纹；重启后自动连接需要已保存的凭据或可用私钥。时段外也可手动连接，并按自动重连设置恢复；进入下个时段后恢复定时管理，结束时断开。手动断开后，本次时段不再自动连接，下个时段恢复。关闭定时后当前连接保持原状。"),
             UiLayout.Actions(save), feedback, scheduleStatus);
     }
 
     private void UpdateScheduleStatus(ScheduleWindow window)
     {
-        string text = settings.Schedule.Enabled ? $"定时 {settings.Schedule.Start:HH:mm}–{settings.Schedule.End:HH:mm} · {window.Description}" : window.Description;
+        string description = manualScheduleOverride && settings.Schedule.Enabled && !window.Active
+            ? "时段外手动连接 · 进入下个启用时段后恢复定时管理" : window.Description;
+        string text = settings.Schedule.Enabled ? $"定时 {settings.Schedule.Start:HH:mm}–{settings.Schedule.End:HH:mm} · {description}" : description;
         if (scheduleStatus.Text != text) scheduleStatus.Text = text;
         if (scheduleOverview.Text != text) scheduleOverview.Text = text;
+    }
+
+    private bool ScheduleBlocksConnection => settings.Schedule.Enabled && !EvaluateSchedule().Active && !manualScheduleOverride;
+
+    private bool PrepareScheduledConnection(bool automatic)
+    {
+        var window = EvaluateSchedule();
+        if (automatic) return !ScheduleBlocksConnection;
+        manualScheduleOverride = settings.Schedule.Enabled && !window.Active;
+        scheduleActivation.Suppress(window);
+        UpdateScheduleStatus(window);
+        return true;
     }
 
     // Runs before the networking busy guard, so the end time can cancel an SSH attempt.
@@ -59,7 +74,9 @@ public sealed partial class MainForm
     {
         var window = EvaluateSchedule();
         UpdateScheduleStatus(window);
-        if (!settings.Schedule.Enabled) return false;
+        if (!settings.Schedule.Enabled) { manualScheduleOverride = false; return false; }
+        if (window.Active) manualScheduleOverride = false;
+        if (manualScheduleOverride) return false;
         if (!window.Active)
         {
             if (lastScheduleNotice != window.Description) { Log(window.Description); lastScheduleNotice = window.Description; }
