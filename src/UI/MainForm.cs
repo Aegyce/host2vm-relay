@@ -3,7 +3,7 @@ namespace Host2VMRelay;
 public sealed partial class MainForm : Form
 {
     private Settings settings;
-    private RelaySession? session;
+    private volatile RelaySession? session;
     private readonly BackgroundCleanup connectionCleanup = new();
     private readonly PendingLogBuffer pendingLogs = new();
     private readonly System.Windows.Forms.Timer logTimer = new() { Interval = 200 };
@@ -119,7 +119,8 @@ public sealed partial class MainForm : Form
         };
         ResumeLayout(true); timer.Start(); logTimer.Start();
         if (SettingsLocation.SameFolder(ClashRuleFile.Folder, ClashRuleFile.DefaultFolder))
-            _ = Task.Run(() => new ClashHealthSync(ClashControlClient.Open, Log).RunAsync(formLifetime.Token));
+            _ = Task.Run(() => new ClashHealthSync(ClashControlClient.Open,
+                () => session?.Health ?? new RelayHealth(false, false), Log).RunAsync(formLifetime.Token));
     }
     protected override void SetVisibleCore(bool value)
     {

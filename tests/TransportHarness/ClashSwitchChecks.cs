@@ -79,7 +79,7 @@ internal static class ClashSwitchChecks
         using var core = Process.Start(start)!;
         using var api = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/"), Timeout = TimeSpan.FromSeconds(1) };
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        Task? pump = null;
+        Task? pump = null, syncTask = null;
         try
         {
             for (int i = 0; ; i++)
@@ -88,6 +88,9 @@ internal static class ClashSwitchChecks
                 catch when (i < 40) { await Task.Delay(100, stop.Token); }
             }
             int active = 0;
+            var sync = new ClashHealthSync(() => new HttpClient { BaseAddress = api.BaseAddress },
+                () => new RelayHealth(relay.TcpHealthy, relay.UdpHealthy), Console.Error.WriteLine);
+            syncTask = sync.RunAsync(stop.Token);
             pump = Task.Run(async () =>
             {
                 while (!stop.IsCancellationRequested)
@@ -96,21 +99,20 @@ internal static class ClashSwitchChecks
                     if (current >= 0)
                     {
                         await udp.ProbeAsync(stop.Token);
-                        relay.SetUpstream(current == 1 ? 12345 : 0, current == 1 ? udp : null);
+                        relay.SetUpstream(current > 0 ? 12345 : 0, current == 1 ? udp : null);
                     }
-                    await ClashHealthSync.RefreshAsync(api, stop.Token);
                     await Task.Delay(ClashHealthSync.Interval, stop.Token);
                 }
             });
-            async Task WaitFor(string expected, Stopwatch watch, double budgetMs = 1000)
+            async Task WaitFor(string expected, Stopwatch watch, double budgetMs = 1000, string? expectedUdp = null)
             {
                 while (watch.ElapsedMilliseconds < budgetMs)
                 {
                     using var state = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay-TCP", stop.Token));
                     using var udpState = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay-UDP", stop.Token));
-                    if (state.RootElement.GetProperty("now").GetString() == expected && udpState.RootElement.GetProperty("now").GetString() == expected)
+                    if (state.RootElement.GetProperty("now").GetString() == expected && udpState.RootElement.GetProperty("now").GetString() == (expectedUdp ?? expected))
                     {
-                        Console.WriteLine($"PASS real Mihomo TCP/UDP select {expected}: {watch.ElapsedMilliseconds} ms"); return;
+                        Console.WriteLine($"PASS real Mihomo TCP/UDP select {expected}/{expectedUdp ?? expected}: {watch.ElapsedMilliseconds} ms"); return;
                     }
                     await Task.Delay(10, stop.Token);
                 }
@@ -127,6 +129,30 @@ internal static class ClashSwitchChecks
             }
             Volatile.Write(ref active, 1);
             await WaitFor("Host2VMRelay", Stopwatch.StartNew());
+            // Native health checks still run every three seconds. The app used
+            // to add five mutating tests per second even when routing agreed.
+            async Task<int> NewTcpTestsSince(DateTimeOffset since)
+            {
+                using var node = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay", stop.Token));
+                var history = node.RootElement.GetProperty("extra").GetProperty(ClashRelayProtocol.Tcp.HealthUrl).GetProperty("history");
+                return history.EnumerateArray().Count(sample => sample.GetProperty("time").GetDateTimeOffset() >= since);
+            }
+            var stableSince = DateTimeOffset.UtcNow;
+            var stable = Stopwatch.StartNew();
+            while (stable.Elapsed < TimeSpan.FromSeconds(4))
+            {
+                using var group = JsonDocument.Parse(await api.GetStringAsync("proxies/Host2VMRelay-TCP", stop.Token));
+                if (group.RootElement.GetProperty("now").GetString() != "Host2VMRelay")
+                    throw new IOException("Healthy TCP unexpectedly fell back during steady forwarding");
+                await Task.Delay(75, stop.Token);
+            }
+            if (await NewTcpTestsSince(stableSince) > 3)
+                throw new IOException("Repeated health tests during steady forwarding");
+            Console.WriteLine("PASS stable TCP retains its relay without repeated active probes");
+            Volatile.Write(ref active, 2);
+            await WaitFor("Host2VMRelay", Stopwatch.StartNew(), expectedUdp: "PASS");
+            Volatile.Write(ref active, 1);
+            await WaitFor("Host2VMRelay", Stopwatch.StartNew());
             Volatile.Write(ref active, -1);
             await WaitFor("PASS", Stopwatch.StartNew(), RelayHealthTiming.Lease.TotalMilliseconds + 1000);
             Console.WriteLine("PASS loss of lease renewal falls back after the health grace period");
@@ -134,6 +160,7 @@ internal static class ClashSwitchChecks
         finally
         {
             await stop.CancelAsync();
+            if (syncTask is not null) await syncTask;
             if (pump is not null) { try { await pump; } catch (OperationCanceledException) { } }
             if (!core.HasExited) { core.Kill(); await core.WaitForExitAsync(); }
             await peerStop.CancelAsync(); await peerTask;
